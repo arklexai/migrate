@@ -2,19 +2,18 @@ package clickhouse
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
-
-	"go.uber.org/atomic"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/database/multistmt"
-	"github.com/hashicorp/go-multierror"
 )
 
 var (
@@ -210,17 +209,13 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 
 	defer func() {
 		if e := ch.Unlock(); e != nil {
-			if err == nil {
-				err = e
-			} else {
-				err = multierror.Append(err, e)
-			}
+			err = errors.Join(err, e)
 		}
 	}()
 
 	var (
 		table string
-		query = "SHOW TABLES FROM " + ch.config.DatabaseName + " LIKE '" + ch.config.MigrationsTable + "'"
+		query = "SHOW TABLES FROM " + quoteIdentifier(ch.config.DatabaseName) + " LIKE '" + ch.config.MigrationsTable + "'"
 	)
 	// check if migration table exists
 	if err := ch.conn.QueryRow(query).Scan(&table); err != nil {
@@ -259,7 +254,7 @@ func (ch *ClickHouse) ensureVersionTable() (err error) {
 }
 
 func (ch *ClickHouse) Drop() (err error) {
-	query := "SHOW TABLES FROM " + ch.config.DatabaseName
+	query := "SHOW TABLES FROM " + quoteIdentifier(ch.config.DatabaseName)
 	tables, err := ch.conn.Query(query)
 
 	if err != nil {
@@ -267,7 +262,7 @@ func (ch *ClickHouse) Drop() (err error) {
 	}
 	defer func() {
 		if errClose := tables.Close(); errClose != nil {
-			err = multierror.Append(err, errClose)
+			err = errors.Join(err, errClose)
 		}
 	}()
 
@@ -277,7 +272,7 @@ func (ch *ClickHouse) Drop() (err error) {
 			return err
 		}
 
-		query = "DROP TABLE IF EXISTS " + ch.config.DatabaseName + "." + table
+		query = "DROP TABLE IF EXISTS " + quoteIdentifier(ch.config.DatabaseName) + "." + quoteIdentifier(table)
 
 		if _, err := ch.conn.Exec(query); err != nil {
 			return &database.Error{OrigErr: err, Query: []byte(query)}
@@ -291,17 +286,26 @@ func (ch *ClickHouse) Drop() (err error) {
 }
 
 func (ch *ClickHouse) Lock() error {
-	if !ch.isLocked.CAS(false, true) {
+	if !ch.isLocked.CompareAndSwap(false, true) {
 		return database.ErrLocked
 	}
 
 	return nil
 }
 func (ch *ClickHouse) Unlock() error {
-	if !ch.isLocked.CAS(true, false) {
+	if !ch.isLocked.CompareAndSwap(true, false) {
 		return database.ErrNotLocked
 	}
 
 	return nil
 }
 func (ch *ClickHouse) Close() error { return ch.conn.Close() }
+
+// Copied from lib/pq implementation: https://github.com/lib/pq/blob/v1.9.0/conn.go#L1611
+func quoteIdentifier(name string) string {
+	end := strings.IndexRune(name, 0)
+	if end > -1 {
+		name = name[:end]
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
