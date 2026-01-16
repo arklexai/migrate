@@ -1,4 +1,4 @@
-FROM golang:1.22.4-alpine3.20 AS builder
+FROM golang:1.24.2-alpine3.20 AS builder
 ARG VERSION
 
 RUN apk add --no-cache git gcc musl-dev make
@@ -24,8 +24,8 @@ COPY --from=builder /go/src/github.com/golang-migrate/migrate/update-db.sh /upda
 RUN ln -s /usr/local/bin/migrate /migrate
 RUN apk add --no-cache python3 \
         py3-pip \
-    && pip3 install --upgrade pip \
-    && pip3 install --no-cache-dir \
+    && pip3 install --break-system-packages --upgrade pip \
+    && pip3 install --break-system-packages --no-cache-dir \
         awscli \
     && rm -rf /var/cache/apk/*
 
